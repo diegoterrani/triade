@@ -1,0 +1,100 @@
+# Agente B3 — mini-índice (WIN) e mini-dólar (WDO).
+# Não compartilha processo, estado nem risco com os outros agentes.
+# Modo efetivo do comando paper/backtest/live vence este arquivo, mas live
+# continua exigindo live_enabled e a variável DAYTRADE_LIVE_CONFIRM.
+
+agent: b3
+timezone: America/Sao_Paulo
+currency: BRL
+live_enabled: false
+paper_venue: simulate   # simulate | demo
+sharpe_periods: 252
+emergency_stop_pct: 0.01
+
+risk:
+  equity: 20000
+  risk_per_trade_pct: 0.004
+  max_trades_per_day: 6
+  daily_loss_limit_pct: 0.02
+  max_drawdown_pct: 0.06
+  sticky_drawdown_halt: true
+
+strategy:
+  name: orb_vwap_trend
+  orb_minutes: 30
+  range_start: "09:05"          # depois do leilão de abertura (08:55–09:00)
+  flatten_time: "18:10"         # antes do leilão de fechamento do WIN
+  no_new_trades_after: "17:40"
+  ema_fast: 9
+  ema_slow: 21
+  atr_period: 14
+  atr_mult: 1.5
+  use_vwap_filter: true
+  use_trend_filter: true
+  one_trade_per_day: true
+
+symbols:
+  - symbol: WIN
+    root: WIN
+    tick_size: 5
+    point_value: 0.20          # R$ por ponto de índice, por contrato
+    lot_step: 1
+    min_qty: 1
+    max_qty: 5
+    fee_per_unit_side: 0.25    # emolumentos B3 aproximados; confira a nota
+    slippage_ticks: 1
+    flatten_time: "18:10"
+    no_new_trades_after: "17:40"
+  - symbol: WDO
+    root: WDO
+    tick_size: 0.5
+    point_value: 10.0          # R$ por 1.0 ponto de cotação, por contrato
+    lot_step: 1
+    min_qty: 1
+    max_qty: 3
+    fee_per_unit_side: 1.06
+    slippage_ticks: 1
+    flatten_time: "18:15"
+    no_new_trades_after: "17:50"
+    blackouts:                 # prévias da PTAX; não abre mão nova
+      - ["10:00", "10:10"]
+      - ["11:00", "11:10"]
+      - ["12:00", "12:10"]
+      - ["13:00", "13:10"]
+
+calendar:
+  roll_sessions_before: 2
+  extra_closed: []
+  extra_open: []
+
+symbol_mode: specific         # specific | continuous
+symbol_suffix: ""
+continuous_symbols:
+  WIN: WIN$
+  WDO: WDO$
+
+feed:
+  kind: replay
+  path: data/sample/b3_win_wdo_5m.csv
+  timeframe: 5m
+  source: "série sintética para o estudo rodar sem corretora; não é pregão da B3"
+
+backtest:
+  oos_fraction: 0.3
+
+mt5:
+  demo: true
+  terminal_path: ""          # exemplo: C:\Program Files\Clear MT5\terminal64.exe
+  login_env: B3_MT5_LOGIN
+  password_env: B3_MT5_PASSWORD
+  server_env: B3_MT5_SERVER
+  magic: 26011701
+  deviation: 20
+  time_offset_hours: 0
+
+notifications:
+  telegram_enabled: false
+
+paths:
+  state_dir: var/b3
+  artifact_dir: artifacts/backtests

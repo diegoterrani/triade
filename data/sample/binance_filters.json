@@ -1,0 +1,26 @@
+{
+  "start": "2026-07-20T15:00:00+00:00",
+  "end": "2026-11-17T15:00:00+00:00",
+  "symbols": {
+    "BTCUSDT": {
+      "bars": 11460,
+      "funding_points": 310,
+      "inferred_price_tick": "0.1",
+      "origin": "data.binance.vision",
+      "filters": {
+        "exchangeInfo": "HTTP 451 no fapi desta rede; tick inferido dos preços"
+      }
+    },
+    "ETHUSDT": {
+      "bars": 11460,
+      "funding_points": 310,
+      "inferred_price_tick": "0.01",
+      "origin": "data.binance.vision",
+      "filters": {
+        "exchangeInfo": "HTTP 451 no fapi desta rede; tick inferido dos preços"
+      }
+    }
+  },
+  "note": "LOT_SIZE não vem no arquivo de klines. O tick abaixo é o menor incremento observado no preço, não o filtro oficial. O modo live recusa ordem se o exchangeInfo divergir do YAML.",
+  "source": "https://data.binance.vision (USD-M futures)"
+}

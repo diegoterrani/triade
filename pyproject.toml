@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "daytrade"
+version = "0.1.0"
+description = "Três agentes independentes de day trade: B3, cripto e NASDAQ."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0.1",
+  "python-dotenv>=1.0.1",
+  "requests>=2.32.0",
+  "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+mt5 = ["MetaTrader5>=5.0.45"]
+
+[project.scripts]
+daytrade-b3 = "daytrade.b3.__main__:main"
+daytrade-crypto = "daytrade.crypto.__main__:main"
+daytrade-nasdaq = "daytrade.nasdaq.__main__:main"
+daytrade-kill = "daytrade.kill:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

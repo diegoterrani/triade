@@ -1,0 +1,73 @@
+# Agente de cripto — Binance, BTCUSDT e ETHUSDT.
+# paper_venue simulate não usa chave. testnet usa BINANCE_TESTNET_*.
+# live usa BINANCE_API_* e nunca a URL de testnet.
+
+agent: crypto
+timezone: America/Sao_Paulo
+currency: USDT
+market: usdm              # usdm | spot. Spot força allow_short false.
+live_enabled: false
+paper_venue: simulate    # simulate | testnet
+sharpe_periods: 365
+emergency_stop_pct: 0.01
+
+risk:
+  equity: 10000
+  risk_per_trade_pct: 0.005
+  max_trades_per_day: 8
+  daily_loss_limit_pct: 0.03
+  max_drawdown_pct: 0.08
+  sticky_drawdown_halt: true
+
+strategy:
+  name: ema_trend_atr
+  ema_fast: 20
+  ema_slow: 50
+  atr_period: 14
+  atr_mult: 2.5
+  min_atr_pct: 0.001
+  max_atr_pct: 0.02
+  use_funding_filter: true
+  max_funding_long: 0.0005
+  min_funding_short: -0.0005
+  funding_blackout_minutes: 5
+  allow_short: true
+
+symbols:
+  - symbol: BTCUSDT
+    root: BTCUSDT
+    tick_size: 0.10
+    point_value: 1.0
+    lot_step: 0.001
+    min_qty: 0.001
+    max_qty: 0.20
+    fee_per_unit_side: 0
+    fee_rate_side: 0.0004     # taker USD-M, VIP 0, sem desconto de BNB
+    slippage_ticks: 1
+  - symbol: ETHUSDT
+    root: ETHUSDT
+    tick_size: 0.01
+    point_value: 1.0
+    lot_step: 0.001
+    min_qty: 0.001
+    max_qty: 2.0
+    fee_per_unit_side: 0
+    fee_rate_side: 0.0004
+    slippage_ticks: 1
+
+feed:
+  kind: replay              # replay | binance_public
+  path: data/sample/binance_btcusdt_ethusdt_15m.csv
+  timeframe: 15m
+  market: usdm
+  source: "klines públicos USD-M e funding de data.binance.vision (o REST fapi devolveu HTTP 451 nesta rede)"
+
+backtest:
+  oos_fraction: 0.3
+
+notifications:
+  telegram_enabled: false
+
+paths:
+  state_dir: var/crypto
+  artifact_dir: artifacts/backtests

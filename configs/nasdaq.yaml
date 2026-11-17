@@ -1,0 +1,89 @@
+# Agente NASDAQ 100 na IC Markets.
+# Símbolo padrão no MT5 da IC Markets: USTEC. Confira o Market Watch:
+# o nome muda por conta, e o point value do YAML tem de bater com o terminal
+# (tolerância 5%, senão o live recusa a ordem).
+#
+# Por que MT5 e não cTrader: a IC Markets oferece os dois. MT5 reutiliza a
+# mesma API do agente da B3, com OUTRO terminal, OUTRO login e OUTRO magic.
+# cTrader exigiria outro protocolo (Open API) sem ganho para este desenho.
+
+agent: nasdaq
+timezone: America/New_York
+currency: USD
+live_enabled: false
+paper_venue: simulate     # simulate | demo
+sharpe_periods: 252
+emergency_stop_pct: 0.01
+symbol_suffix: ""
+
+risk:
+  equity: 10000
+  risk_per_trade_pct: 0.005
+  max_trades_per_day: 4
+  daily_loss_limit_pct: 0.02
+  max_drawdown_pct: 0.06
+  sticky_drawdown_halt: true
+
+strategy:
+  name: ny_open_range      # ny_open_range | vwap_mean_reversion
+  orb_minutes: 30
+  range_start: "09:30"
+  entries_after: "10:00"
+  flatten_time: "15:45"
+  no_new_trades_after: "15:15"
+  ema_fast: 9
+  ema_slow: 21
+  atr_period: 14
+  atr_mult: 1.5
+  use_vwap_filter: true
+  use_trend_filter: true
+  one_trade_per_day: true
+  extension_k: 1.5
+  rearm_k: 0.5
+  slope_max: 0.0015
+  mr_atr_mult: 1.0
+
+news_blackouts:
+  - ["08:25", "08:40"]      # dados das 08:30 ET
+  - ["09:55", "10:05"]      # dados das 10:00 ET
+
+symbols:
+  - symbol: USTEC
+    root: USTEC
+    tick_size: 0.1
+    point_value: 1.0        # US$ por ponto cheio, por 1.0 lote; CONFIRME no terminal
+    lot_step: 0.1
+    min_qty: 0.1
+    max_qty: 3
+    fee_per_unit_side: 0    # índice CFD da IC costuma ser só spread
+    slippage_ticks: 10      # 10 * 0.1 = 1.0 ponto de slippage por lado
+
+calendar:
+  extra_closed: []
+  extra_open: []
+
+feed:
+  kind: replay
+  path: data/sample/nasdaq_ustec_5m.csv
+  timeframe: 5m
+  source: "série sintética da sessão de Nova York; não é o book da IC Markets"
+
+backtest:
+  oos_fraction: 0.3
+
+mt5:
+  demo: true
+  terminal_path: ""
+  login_env: NASDAQ_MT5_LOGIN
+  password_env: NASDAQ_MT5_PASSWORD
+  server_env: NASDAQ_MT5_SERVER
+  magic: 26011702
+  deviation: 30
+  time_offset_hours: 0
+
+notifications:
+  telegram_enabled: false
+
+paths:
+  state_dir: var/nasdaq
+  artifact_dir: artifacts/backtests
