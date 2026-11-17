@@ -265,7 +265,18 @@ sudo apt-get install -y wine wine64 winetricks xvfb cabextract unzip wget ca-cer
 bash scripts/linux/setup-triade.sh
 ```
 
-O script cria o venv do Linux (sem o extra `mt5`), copia `.env.example` se ainda não houver `.env`, cria os prefixos `~/.local/share/triade/wine-b3` e `wine-nasdaq`, instala o Python 3.12 de Windows e o `MetaTrader5` dentro de cada um, e grava unidades de usuário do systemd. Elas nascem **desabilitadas**. Os agentes nascem em **paper**. O script não mexe em `live_enabled` e não define `DAYTRADE_LIVE_CONFIRM`.
+O script cria o venv do Linux (sem o extra `mt5`), copia `.env.example` se ainda não houver `.env`, cria os prefixos `~/.local/share/triade/wine-b3` e `wine-nasdaq`, instala o Python 3.12 de Windows e o `MetaTrader5` dentro de cada um, e grava unidades de usuário do systemd. Elas nascem **desabilitadas**. Os agentes nascem em **paper**. O script não mexe em `live_enabled`, não define `DAYTRADE_LIVE_CONFIRM` e não chama `loginctl enable-linger`.
+
+A unidade da ponte não redireciona o stdout do Wine. Com `StandardOutput=append`, o Python de Windows aborta antes de escutar (`init_sys_streams`, `OSError: [WinError 6] Invalid handle`). `scripts/linux/run-bridge.sh` abre um console, o stdin do processo Linux fica em `/dev/null`, e esse processo anexa a saída em `var/<agente>/logs/bridge.log`. A ponte continua só em `127.0.0.1`.
+
+Para regravar as unidades depois de um `git pull`, sem reinstalar o Wine:
+
+```bash
+bash scripts/linux/setup-triade.sh --units-only
+systemctl --user daemon-reload
+systemctl --user start triade-xvfb-b3 triade-bridge-b3
+.venv/bin/python -m daytrade.mt5bridge check --config configs/b3.yaml
+```
 
 Instale o terminal em cada prefixo e entre na conta. XP primeiro; Clear ou Rico se a XP não oferecer MT5. IC Markets no outro prefixo:
 
@@ -284,7 +295,7 @@ bash scripts/linux/run-agent.sh b3 paper
 bash scripts/linux/run-agent.sh crypto paper
 ```
 
-Log do agente: `var/<agente>/logs/paper.jsonl` (ou `live.jsonl`). Log da ponte: `var/<agente>/logs/bridge.log`. O watcher de `scripts/linux/run-agent.sh` olha `var/KILL_ALL` e `var/<agente>/KILL`. Enquanto um desses arquivos existir, ele espera e não religa o Python. A unidade da ponte reinicia se o Wine cair; ela não manda ordem sozinha. Apagar o kill não zera posição.
+Log do agente: `var/<agente>/logs/paper.jsonl` (ou `live.jsonl`). Log da ponte: `var/<agente>/logs/bridge.log`, gravado pelo wrapper no Linux, não pelo `StandardOutput` do systemd. O watcher de `scripts/linux/run-agent.sh` olha `var/KILL_ALL` e `var/<agente>/KILL`. Enquanto um desses arquivos existir, ele espera e não religa o Python. A unidade da ponte reinicia se o Wine cair; ela não manda ordem sozinha. Apagar o kill não zera posição.
 
 Para o boot, depois do checklist: `sudo loginctl enable-linger $USER`, habilite as unidades e só então edite `triade-agent-b3.service` para trocar `paper` por `live`.
 
@@ -339,7 +350,7 @@ Um agente por vez. `live_enabled` continua `false` até o último item. A unidad
 
 ## Limitações
 
-- Não havia terminal MT5, conta de corretora nem chave da Binance. Ordem demo, testnet e live não foram enviadas. A ponte foi exercitada com um servidor falso (prazo e queda), não com Wine nem com um terminal logado. O lote mínimo do USTEC não foi lido de um terminal nesta máquina.
+- Não havia terminal MT5, conta de corretora nem chave da Binance. Ordem demo, testnet e live não foram enviadas. A ponte foi exercitada com um servidor falso (prazo e queda), não com Wine nem com um terminal logado. O gerador das unidades e o wrapper de console foram testados no Linux, sem o Python de Windows. O lote mínimo do USTEC não foi lido de um terminal nesta máquina.
 - Este repositório não chama uma API de modelo. O analista é um processo seu, que usa a CLI. Sem chave de LLM.
 - B3 e NASDAQ da amostra são aleatórios com semente `20261117`. Servem para o estudo rodar, não para descrever o pregão.
 - O REST de futuros da Binance respondeu 451. O candle ao vivo (`binance_public`) não foi exercitado. O histórico veio do arquivo público da Binance Vision.

@@ -3,6 +3,10 @@
 Não importa o pacote daytrade: o Wine só precisa da biblioteca padrão e do
 MetaTrader5. Escuta exclusivamente em 127.0.0.1. Um terminal, um prefixo, uma porta.
 
+No VPS o systemd não pode ser o stdout deste processo: o Python de Windows
+aborta em init_sys_streams com WinError 6. scripts/linux/run-bridge.sh abre
+um console e o Linux grava var/<agente>/logs/bridge.log.
+
     wine C:\\Python312\\python.exe -u mt5_bridge_server.py --host 127.0.0.1 --port 18861
 """
 
