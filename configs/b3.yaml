@@ -98,3 +98,44 @@ notifications:
 paths:
   state_dir: var/b3
   artifact_dir: artifacts/backtests
+
+# O analista só mexe no que está aqui. EMA e teto de risco ficam fora.
+# max_trades da fonte python iguala o teto da conta para o estudo não mudar.
+llm:
+  enabled: true
+  min_holding_minutes: 30
+  max_holding_minutes: 240
+  max_rationale_chars: 500
+  volume_spike_multiple: 2.0
+  max_qty:
+    WIN: 1
+    WDO: 1
+  max_trades_per_source:
+    python: 6
+    llm: 2
+  parameters:
+    atr_mult:
+      type: float
+      min: 1.0
+      max: 2.5
+    use_vwap_filter:
+      type: bool
+    use_trend_filter:
+      type: bool
+
+# O comando live sempre aplica este recorte. Backtest e paper ficam no bloco risk.
+micro_live:
+  equity: 5000
+  risk_per_trade_pct: 0.01
+  max_trades_per_day: 4
+  daily_loss_limit_pct: 0.02
+  max_drawdown_pct: 0.04
+  source_daily_loss_pct: 0.005
+  sizing_mode: risk
+  adopt_terminal_spec: true
+  max_qty:
+    WIN: 1
+    WDO: 1
+  max_trades_per_source:
+    python: 2
+    llm: 2

@@ -49,11 +49,12 @@ def make_engine(
 ) -> ExecutionEngine:
     directory = state_dir(cfg)
     limits = risk_limits_from_config(cfg)
+    instruments = getattr(broker, "instruments", None) or instruments_from_config(cfg)
     engine = ExecutionEngine(
         agent=cfg["agent"],
         broker=broker,
         risk=RiskManager(limits, equity=equity),
-        instruments=instruments_from_config(cfg),
+        instruments=instruments,
         strategies=strategies,
         journal=journal,
         risk_tz=ZoneInfo(cfg["timezone"]),
@@ -67,6 +68,10 @@ def make_engine(
         ),
         emergency_stop_pct=float(cfg.get("emergency_stop_pct", 0.01)),
         persist_path=None if mode == "backtest" else directory / f"{mode}-state.json",
+        llm_dir=None if mode == "backtest" else directory / "llm",
+        param_bounds=(cfg.get("llm") or {}).get("parameters") or {},
+        analyst_enabled=bool((cfg.get("llm") or {}).get("enabled", True)),
+        volume_spike_multiple=float((cfg.get("llm") or {}).get("volume_spike_multiple", 2.0)),
     )
     return engine
 

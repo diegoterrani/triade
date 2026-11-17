@@ -11,7 +11,7 @@ import json
 
 from daytrade.common.app import trip_flatten_flag
 from daytrade.common.broker_paper import PaperBroker
-from daytrade.common.config import require_env, resolve_path
+from daytrade.common.config import prepare_for_mode, require_env, resolve_path
 from daytrade.common.errors import SafetyError
 from daytrade.common.feeds import ReplayFeed, load_bars_csv
 from daytrade.common.livegate import assert_live_allowed
@@ -71,6 +71,7 @@ def build_broker(cfg: dict, mode: str):
         router=_router(cfg),
         deviation=int(mt5_cfg.get("deviation", 30)),
         demo=bool(mt5_cfg.get("demo", False)),
+        adopt_terminal_spec=bool(cfg.get("adopt_terminal_spec")),
     )
     broker.connect()
     return broker
@@ -88,6 +89,7 @@ def _resolve_factory(cfg):
 def run_realtime(cfg: dict, mode: str, max_bars: int | None, data_path: str | None) -> int:
     if mode == "live":
         assert_live_allowed(cfg["agent"], bool(cfg.get("live_enabled", False)))
+        cfg = prepare_for_mode(cfg, mode)
     directory = state_dir(cfg)
     logger = setup_logging(cfg["agent"], directory / "logs" / f"{mode}.jsonl")
     broker = build_broker(cfg, mode)

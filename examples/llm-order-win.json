@@ -1,0 +1,11 @@
+{
+  "idempotency_key": "llm-win-20261117-001",
+  "symbol": "WIN",
+  "side": "buy",
+  "qty": 1,
+  "entry_type": "market",
+  "stop": 127000,
+  "take_profit": 129500,
+  "max_holding_minutes": 120,
+  "rationale": "preço segurou acima da VWAP depois da abertura; mão de duas horas, stop abaixo da faixa"
+}

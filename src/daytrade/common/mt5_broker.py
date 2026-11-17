@@ -7,11 +7,12 @@ para a B3: os dois agentes usam a mesma API, em processos e terminais diferentes
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from daytrade.common.errors import Disconnect, SafetyError
 from daytrade.common.models import Fill, Instrument, OrderRequest
-from daytrade.common.specs import assert_point_value
+from daytrade.common.specs import assert_point_value, read_terminal_spec
 from daytrade.common.symbols import SymbolRouter
 
 # Códigos públicos do protocolo do terminal. O teste não precisa do pacote.
@@ -66,6 +67,7 @@ class MT5Broker:
         router: SymbolRouter,
         deviation: int = 20,
         demo: bool = False,
+        adopt_terminal_spec: bool = False,
     ) -> None:
         self.terminal_path = terminal_path
         self.login = login
@@ -76,6 +78,7 @@ class MT5Broker:
         self.router = router
         self.deviation = deviation
         self.demo = demo
+        self.adopt_terminal_spec = adopt_terminal_spec
         self.last: dict[str, float] = {}
         self._mt5 = None
 
@@ -209,6 +212,23 @@ class MT5Broker:
                 )
             if not self._mt5.symbol_select(venue, True):
                 raise SafetyError(f"não consegui selecionar {venue} no Market Watch")
+            if self.adopt_terminal_spec:
+                spec = read_terminal_spec(
+                    venue,
+                    volume_min=getattr(info, "volume_min", None),
+                    volume_step=getattr(info, "volume_step", None),
+                    tick_size=getattr(info, "trade_tick_size", None),
+                    tick_value=getattr(info, "trade_tick_value", None),
+                )
+                self.instruments[internal] = replace(
+                    instrument,
+                    min_qty=spec["min_qty"],
+                    lot_step=spec["lot_step"],
+                    tick_size=spec["tick_size"],
+                    point_value=spec["point_value"],
+                    max_qty=spec["min_qty"],
+                )
+                continue
             assert_point_value(
                 symbol=venue,
                 config_point_value=instrument.point_value,

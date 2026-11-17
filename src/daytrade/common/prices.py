@@ -7,6 +7,15 @@ import math
 from daytrade.common.models import Side
 
 
+def ceil_step(qty: float, step: float) -> float:
+    if step <= 0:
+        return float(qty)
+    steps = math.ceil((qty / step) - 1e-12)
+    if steps <= 0:
+        return 0.0
+    return round(steps * step, 8)
+
+
 def floor_step(qty: float, step: float) -> float:
     if step <= 0:
         return float(qty)

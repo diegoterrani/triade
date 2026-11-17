@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -17,6 +17,8 @@ from daytrade.common.errors import AlreadyFlat, Disconnect, EntryRolledBack, Saf
 from daytrade.common.ids import client_order_id
 from daytrade.common.journal import Journal
 from daytrade.common.killswitch import KillSwitch
+from daytrade.common.llm_control import apply_params, read_control, write_event, write_result
+from daytrade.common.llm_orders import hold_deadline, signal_from_order
 from daytrade.common.logging_setup import log_event
 from daytrade.common.models import Bar, Instrument, OrderRequest, Position, Signal, Trade
 from daytrade.common.notify import Notifier, NullNotifier
@@ -82,6 +84,10 @@ class ExecutionEngine:
         notifier: Notifier | None = None,
         emergency_stop_pct: float = 0.01,
         persist_path: Path | None = None,
+        llm_dir: Path | None = None,
+        param_bounds: dict | None = None,
+        analyst_enabled: bool = True,
+        volume_spike_multiple: float = 2.0,
     ) -> None:
         self.agent = agent
         self.broker = broker
@@ -96,8 +102,16 @@ class ExecutionEngine:
         self.notifier = notifier or NullNotifier()
         self.emergency_stop_pct = emergency_stop_pct
         self.persist_path = persist_path
+        self.llm_dir = llm_dir
+        self.param_bounds = param_bounds or {}
+        self.analyst_enabled = analyst_enabled
+        self.volume_spike_multiple = volume_spike_multiple
         self.positions: dict[str, Position] = {}
         self.pending: dict[str, Signal] = {}
+        self.llm_pending: dict[str, Signal] = {}
+        self.llm_done: set[str] = set()
+        self.recent_bars: list[Bar] = []
+        self._volumes: dict[str, list[float]] = {}
         self.seen: set[str] = set()
         self.trades: list[Trade] = []
         self.equity_curve: list[tuple[datetime, float]] = []
@@ -123,24 +137,37 @@ class ExecutionEngine:
         if not self.risk.state.halted:
             self._halt_logged = None
         self._log_halt(self.risk.update_equity(equity))
+        self._apply_live_params()
         pending = self.pending.pop(bar.symbol, None)
         if pending is not None:
             self._act_pending(pending, bar)
+        llm_pending = self.llm_pending.pop(bar.symbol, None)
+        if llm_pending is not None:
+            if bar.symbol in self.positions:
+                self._reject(llm_pending, f"símbolo ocupado pela fonte {self.positions[bar.symbol].source}; uma mão por símbolo, sem netting")
+            else:
+                self._act_pending(llm_pending, bar)
         self._protect(bar)
         self.last_prices[bar.symbol] = bar.close
         self.broker.mark(bar.symbol, bar.close)
         self._log_halt(self.risk.update_equity(self._equity()))
         strategy = self.strategies.get(bar.symbol)
         if strategy is not None:
-            signals = strategy.on_bar(bar, self.positions.get(bar.symbol))
+            held = self.positions.get(bar.symbol)
+            visible = held if held is None or held.source == "python" else None
+            signals = strategy.on_bar(bar, visible)
             for signal in signals:
                 self._handle_signal(signal, bar)
+        self._note_volume(bar)
+        self._remember_bar(bar)
+        self._drain_llm(bar)
         self.equity_curve.append((bar.ts, self._equity()))
         self.last_bar_ts = bar.ts
         return "ok"
 
     def on_disconnect(self, detail: str) -> None:
         self.pending.clear()
+        self.llm_pending.clear()
         self.block_entries = True
         self.risk.state.block_entries = True
         self.journal.write("disconnect", detalhe=detail)
@@ -185,6 +212,7 @@ class ExecutionEngine:
     def flatten_all(self, reason: str, ts: datetime | None = None) -> None:
         when = ts or _utc_now()
         self.pending.clear()
+        self.llm_pending.clear()
         cancelled = 0
         try:
             cancelled = int(self.broker.cancel_all())
@@ -227,6 +255,9 @@ class ExecutionEngine:
             "sticky_halt": self.risk.state.sticky_halt,
             "halt_reason": self.risk.state.halt_reason,
             "block_entries": self.block_entries,
+            "trades_by_source": dict(self.risk.state.trades_by_source),
+            "pnl_by_source": dict(self.risk.state.pnl_by_source),
+            "source_halted": dict(self.risk.state.source_halted),
             "seen": sorted(self.seen),
             "positions": [_position_dict(position) for position in self.positions.values()],
             "broker": broker_state,
@@ -246,6 +277,9 @@ class ExecutionEngine:
         state.halt_reason = payload.get("halt_reason")
         self.block_entries = bool(payload.get("block_entries", False))
         state.block_entries = self.block_entries
+        state.trades_by_source = {str(key): int(value) for key, value in (payload.get("trades_by_source") or {}).items()}
+        state.pnl_by_source = {str(key): float(value) for key, value in (payload.get("pnl_by_source") or {}).items()}
+        state.source_halted = {str(key): str(value) for key, value in (payload.get("source_halted") or {}).items()}
         self.seen = set(payload.get("seen", []))
         self.positions = {}
         for raw in payload.get("positions", []):
@@ -262,10 +296,27 @@ class ExecutionEngine:
 
     def _act_pending(self, signal: Signal, bar: Bar) -> None:
         if signal.side == "flat":
-            if signal.symbol in self.positions:
+            held = self.positions.get(signal.symbol)
+            if held is not None and held.source == signal.source:
                 self._flatten(signal.symbol, bar.open, bar.ts, signal.reason)
             return
+        if signal.limit_price is not None:
+            if signal.ts.astimezone(self.risk_tz).date() != bar.ts.astimezone(self.risk_tz).date():
+                self._reject(signal, "ordem limite expirou no dia")
+                return
+            touched = bar.low <= signal.limit_price if signal.side == "buy" else bar.high >= signal.limit_price
+            if not touched:
+                self._queue(signal)
+                return
+            self._try_entry(signal, signal.limit_price, bar.ts)
+            return
         self._try_entry(signal, bar.open, bar.ts)
+
+    def _queue(self, signal: Signal) -> None:
+        if signal.source == "llm":
+            self.llm_pending[signal.symbol] = signal
+        else:
+            self.pending[signal.symbol] = signal
 
     def _handle_signal(self, signal: Signal, bar: Bar) -> None:
         self.journal.write(
@@ -276,7 +327,11 @@ class ExecutionEngine:
             strategy=signal.strategy,
             stop=signal.stop_price,
             target=signal.target_price,
+            source=signal.source,
+            rationale=signal.rationale or signal.reason,
         )
+        if signal.source == "python" and signal.side in ("buy", "sell"):
+            self._event("range_break", symbol=signal.symbol, side=signal.side, rationale=signal.reason)
         log_event(
             self.logger,
             logging.INFO,
@@ -287,22 +342,34 @@ class ExecutionEngine:
             stop=signal.stop_price,
         )
         if signal.side == "flat":
-            if signal.symbol not in self.positions:
+            held = self.positions.get(signal.symbol)
+            if held is None:
+                return
+            if held.source != signal.source:
+                self._reject(signal, f"saída ignorada: a mão é da fonte {held.source}")
                 return
             if signal.immediate:
                 self._flatten(signal.symbol, bar.close, bar.ts, signal.reason)
             else:
-                self.pending[signal.symbol] = signal
+                self._queue(signal)
+            return
+        if self._entries_disabled() and signal.source in ("python", "llm"):
+            self._reject(signal, "agente desligado pelo analista; entradas novas bloqueadas")
             return
         if self.block_entries or self.risk.is_blocked():
             self._reject(signal, self.risk.state.halt_reason or "entradas bloqueadas até a reconciliação")
             return
-        if signal.symbol in self.positions:
+        held = self.positions.get(signal.symbol)
+        if held is not None:
+            if held.source != signal.source:
+                self._reject(signal, f"símbolo ocupado pela fonte {held.source}; uma mão por símbolo, sem netting")
+            elif signal.source == "llm":
+                self._reject(signal, "já existe mão desta fonte neste símbolo")
             return
         if signal.immediate:
             self._try_entry(signal, bar.close, bar.ts)
         else:
-            self.pending[signal.symbol] = signal
+            self._queue(signal)
 
     def _try_entry(self, signal: Signal, ref_price: float, ts: datetime) -> None:
         if signal.side not in ("buy", "sell"):
@@ -332,7 +399,7 @@ class ExecutionEngine:
             return
         contract = self.resolve_contract(signal.symbol, ts)
         order = OrderRequest(
-            client_order_id=client_order_id(self.agent, contract, signal.ts, signal.side, "entry"),
+            client_order_id=signal.client_order_id or client_order_id(self.agent, contract, signal.ts, signal.side, "entry"),
             symbol=signal.symbol,
             side=signal.side,  # type: ignore[arg-type]
             qty=decision.qty,
@@ -342,6 +409,7 @@ class ExecutionEngine:
             stop_price=decision.stop_price,
             reduce_only=False,
             contract=contract,
+            source=signal.source,
         )
         try:
             fill = self._submit_once(order, ref_price)
@@ -369,8 +437,10 @@ class ExecutionEngine:
             contract=contract,
             client_order_id=fill.client_order_id,
             target_price=signal.target_price,
+            source=signal.source,
+            max_hold_until=hold_deadline(fill.ts, signal.max_hold_minutes),
         )
-        self.risk.note_entry()
+        self.risk.note_entry(signal.source)
         self.journal.write(
             "fill",
             symbol=signal.symbol,
@@ -382,6 +452,7 @@ class ExecutionEngine:
             fee=fill.fee,
             reason=signal.reason,
             client_order_id=fill.client_order_id,
+            source=signal.source,
         )
         log_event(
             self.logger,
@@ -404,6 +475,9 @@ class ExecutionEngine:
     def _protect(self, bar: Bar) -> None:
         position = self.positions.get(bar.symbol)
         if position is None:
+            return
+        if position.max_hold_until is not None and bar.ts >= position.max_hold_until:
+            self._flatten(bar.symbol, bar.close, bar.ts, "tempo máximo da mão")
             return
         stop_ref = _stop_reference(position, bar)
         if stop_ref is not None:
@@ -481,9 +555,10 @@ class ExecutionEngine:
             entry_reason=position.entry_reason,
             exit_reason=reason,
             strategy=position.strategy,
+            source=position.source,
         )
         self.trades.append(trade)
-        self.risk.note_realized(pnl)
+        self.risk.note_realized(pnl, position.source)
         self.positions.pop(symbol, None)
         self.journal.write(
             "trade",
@@ -498,6 +573,7 @@ class ExecutionEngine:
             entry_reason=trade.entry_reason,
             exit_reason=reason,
             client_order_id=fill.client_order_id,
+            source=position.source,
         )
         log_event(
             self.logger,
@@ -537,6 +613,7 @@ class ExecutionEngine:
             entry_fee=0.0,
             contract=self.resolve_contract(symbol, ts),
             client_order_id="adopted",
+            source="broker",
         )
         attach = getattr(self.broker, "attach_stop", None)
         if attach is not None:
@@ -563,7 +640,21 @@ class ExecutionEngine:
         return ceil_tick(price * (1 + self.emergency_stop_pct), instrument.tick_size)
 
     def _reject(self, signal: Signal, reason: str) -> None:
-        self.journal.write("reject", symbol=signal.symbol, side=signal.side, reason=reason, sinal=signal.reason)
+        self.journal.write(
+            "reject",
+            symbol=signal.symbol,
+            side=signal.side,
+            reason=reason,
+            sinal=signal.reason,
+            source=signal.source,
+            rationale=signal.rationale or signal.reason,
+        )
+        if signal.source == "llm" and signal.client_order_id and self.llm_dir is not None:
+            self.llm_done.add(signal.client_order_id)
+            write_result(self.llm_dir.parent, signal.client_order_id, "recusada", reason)
+            inbox = self.llm_dir / "inbox" / f"{signal.client_order_id}.json"
+            if inbox.exists():
+                inbox.unlink()
         log_event(
             self.logger,
             logging.INFO,
@@ -578,8 +669,115 @@ class ExecutionEngine:
             return
         self._halt_logged = reason
         self.journal.write("halt", motivo=reason)
+        self._event("halt", motivo=reason)
         log_event(self.logger, logging.ERROR, "agente travado para novas entradas", motivo=reason)
         self.notifier.send(f"{self.agent}: travado ({reason}). Posições seguem com stop.")
+
+    def _entries_disabled(self) -> bool:
+        if self.llm_dir is None:
+            return False
+        control = read_control(self.llm_dir.parent)
+        if "enabled" in control:
+            return not bool(control["enabled"])
+        return not self.analyst_enabled
+
+    def _apply_live_params(self) -> None:
+        if self.llm_dir is None or not self.param_bounds:
+            return
+        params = read_control(self.llm_dir.parent).get("params") or {}
+        if params:
+            apply_params(self.strategies, params, self.param_bounds)
+
+    def _remember_bar(self, bar: Bar) -> None:
+        self.recent_bars.append(bar)
+        if len(self.recent_bars) > 240:
+            self.recent_bars = self.recent_bars[-240:]
+        if self.llm_dir is None:
+            return
+        path = self.llm_dir.parent / "recent-bars.json"
+        payload = [
+            {
+                "symbol": item.symbol,
+                "ts": item.ts.isoformat(),
+                "open": item.open,
+                "high": item.high,
+                "low": item.low,
+                "close": item.close,
+                "volume": item.volume,
+                "timeframe": item.timeframe,
+            }
+            for item in self.recent_bars
+        ]
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
+
+    def _note_volume(self, bar: Bar) -> None:
+        history = self._volumes.setdefault(bar.symbol, [])
+        history.append(bar.volume)
+        if len(history) > 21:
+            del history[:-21]
+        baseline = history[:-1]
+        if len(baseline) < 5:
+            return
+        average = sum(baseline) / len(baseline)
+        if average > 0 and bar.volume >= average * self.volume_spike_multiple:
+            self._event("volume_spike", symbol=bar.symbol, volume=bar.volume, media=round(average, 4))
+
+    def _event(self, kind: str, **fields: object) -> None:
+        if self.llm_dir is None:
+            return
+        write_event(self.llm_dir.parent, kind, agent=self.agent, **fields)
+
+    def _drain_llm(self, bar: Bar) -> None:
+        if self.llm_dir is None:
+            return
+        inbox = self.llm_dir / "inbox"
+        if not inbox.exists():
+            return
+        for path in sorted(inbox.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            key = str(payload.get("idempotency_key") or path.stem)
+            if key in self.llm_done:
+                path.unlink(missing_ok=True)
+                continue
+            if key in self.seen or any(item.client_order_id == key for item in self.llm_pending.values()):
+                if key in self.seen:
+                    write_result(self.llm_dir.parent, key, "preenchida", "ordem já passou pelo risco")
+                    path.unlink(missing_ok=True)
+                continue
+            signal = signal_from_order(payload, bar.ts)
+            self.journal.write(
+                "llm_decision",
+                source="llm",
+                idempotency_key=key,
+                symbol=signal.symbol,
+                side=signal.side,
+                stop=signal.stop_price,
+                rationale=signal.rationale,
+            )
+            before = len(self.journal.path.read_text(encoding="utf-8").splitlines()) if self.journal.path.exists() else 0
+            self._handle_signal(signal, bar)
+            queued = self.llm_pending.get(signal.symbol)
+            if queued is not None and queued.client_order_id == key:
+                write_result(self.llm_dir.parent, key, "na_fila", "na fila da próxima barra; o risco julga no fill")
+                self._event("llm_order", symbol=signal.symbol, side=signal.side)
+            elif signal.symbol in self.positions and self.positions[signal.symbol].client_order_id == key:
+                write_result(self.llm_dir.parent, key, "preenchida", "preenchida pelo motor de risco")
+                path.unlink(missing_ok=True)
+            else:
+                detail = "recusada pelo risco ou por conflito de fonte"
+                lines = self.journal.path.read_text(encoding="utf-8").splitlines()
+                for line in reversed(lines[before:]):
+                    item = json.loads(line)
+                    if item.get("event") == "reject" and item.get("symbol") == signal.symbol:
+                        detail = str(item.get("reason") or detail)
+                        break
+                write_result(self.llm_dir.parent, key, "recusada", detail, payload)
+                path.unlink(missing_ok=True)
 
     def _equity(self) -> float:
         return float(self.broker.equity())
@@ -596,6 +794,8 @@ def _null_logger(agent: str) -> logging.Logger:
 def _position_dict(position: Position) -> dict[str, object]:
     payload = asdict(position)
     payload["opened_at"] = position.opened_at.isoformat()
+    if position.max_hold_until is not None:
+        payload["max_hold_until"] = position.max_hold_until.isoformat()
     return payload
 
 
@@ -615,4 +815,15 @@ def _position_from(raw: dict) -> Position:
         contract=raw["contract"],
         client_order_id=raw["client_order_id"],
         target_price=None if raw.get("target_price") is None else float(raw["target_price"]),
+        source=str(raw.get("source") or "python"),
+        max_hold_until=_parse_optional_time(raw.get("max_hold_until")),
     )
+
+
+def _parse_optional_time(value: object) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed

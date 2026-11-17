@@ -71,3 +71,57 @@ notifications:
 paths:
   state_dir: var/crypto
   artifact_dir: artifacts/backtests
+
+llm:
+  enabled: true
+  min_holding_minutes: 30
+  max_holding_minutes: 240
+  max_rationale_chars: 500
+  volume_spike_multiple: 2.0
+  max_qty:
+    BTCUSDT: 0.01
+    ETHUSDT: 0.1
+  max_trades_per_source:
+    python: 8
+    llm: 2
+  parameters:
+    atr_mult:
+      type: float
+      min: 2.0
+      max: 3.5
+    min_atr_pct:
+      type: float
+      min: 0.0005
+      max: 0.005
+    max_atr_pct:
+      type: float
+      min: 0.01
+      max: 0.03
+    max_funding_long:
+      type: float
+      min: 0.0001
+      max: 0.001
+    min_funding_short:
+      type: float
+      min: -0.001
+      max: -0.0001
+
+# Conta pequena em USD-M, alavancagem 2x isolada, no menor notional que o risco aceitar.
+# Para spot, troque market para spot neste bloco: a alavancagem é ignorada e a venda fica desligada.
+micro_live:
+  equity: 1000
+  risk_per_trade_pct: 0.02
+  max_trades_per_day: 4
+  daily_loss_limit_pct: 0.03
+  max_drawdown_pct: 0.06
+  source_daily_loss_pct: 0.01
+  sizing_mode: min_notional
+  min_notional: 100
+  leverage: 2
+  margin_type: isolated
+  max_qty:
+    BTCUSDT: 0.01
+    ETHUSDT: 0.1
+  max_trades_per_source:
+    python: 2
+    llm: 2

@@ -26,3 +26,30 @@ def assert_point_value(
             "antes de mandar ordem."
         )
     return broker_point
+
+
+def read_terminal_spec(
+    symbol: str,
+    *,
+    volume_min: float | None,
+    volume_step: float | None,
+    tick_size: float | None,
+    tick_value: float | None,
+) -> dict[str, float]:
+    """Lê o lote mínimo do terminal. Sem esses números o micro_live não opera."""
+    if volume_min is None or volume_min <= 0 or volume_step is None or volume_step <= 0:
+        raise SafetyError(
+            f"{symbol}: lote mínimo ou passo ilegível no terminal. "
+            "O perfil micro_live não chuta esse número."
+        )
+    if tick_size is None or tick_size <= 0 or tick_value is None or tick_value < 0:
+        raise SafetyError(
+            f"{symbol}: tick ou valor do tick ilegível no terminal. "
+            "O perfil micro_live não opera sem o point value da corretora."
+        )
+    return {
+        "min_qty": float(volume_min),
+        "lot_step": float(volume_step),
+        "tick_size": float(tick_size),
+        "point_value": float(tick_value) / float(tick_size),
+    }

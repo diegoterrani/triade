@@ -1,7 +1,8 @@
 # Agente NASDAQ 100 na IC Markets.
 # Símbolo padrão no MT5 da IC Markets: USTEC. Confira o Market Watch:
-# o nome muda por conta, e o point value do YAML tem de bater com o terminal
-# (tolerância 5%, senão o live recusa a ordem).
+# o nome muda por conta. No paper/demo o point value do YAML tem de bater
+# com o terminal (tolerância 5%). O comando live usa micro_live e adota
+# lote, passo e point value lidos no terminal; se não conseguir ler, não opera.
 #
 # Por que MT5 e não cTrader: a IC Markets oferece os dois. MT5 reutiliza a
 # mesma API do agente da B3, com OUTRO terminal, OUTRO login e OUTRO magic.
@@ -87,3 +88,52 @@ notifications:
 paths:
   state_dir: var/nasdaq
   artifact_dir: artifacts/backtests
+
+llm:
+  enabled: true
+  min_holding_minutes: 30
+  max_holding_minutes: 240
+  max_rationale_chars: 500
+  volume_spike_multiple: 2.0
+  max_qty:
+    USTEC: 0.1
+  max_trades_per_source:
+    python: 4
+    llm: 2
+  parameters:
+    atr_mult:
+      type: float
+      min: 1.0
+      max: 2.5
+    use_vwap_filter:
+      type: bool
+    use_trend_filter:
+      type: bool
+    extension_k:
+      type: float
+      min: 1.0
+      max: 2.5
+    rearm_k:
+      type: float
+      min: 0.2
+      max: 1.0
+    slope_max:
+      type: float
+      min: 0.0005
+      max: 0.003
+
+# O lote máximo vira o lote mínimo do terminal na hora do connect.
+micro_live:
+  equity: 2000
+  risk_per_trade_pct: 0.005
+  max_trades_per_day: 4
+  daily_loss_limit_pct: 0.01
+  max_drawdown_pct: 0.03
+  source_daily_loss_pct: 0.005
+  sizing_mode: risk
+  adopt_terminal_spec: true
+  max_qty:
+    USTEC: 0.1
+  max_trades_per_source:
+    python: 2
+    llm: 2

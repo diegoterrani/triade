@@ -1,0 +1,1 @@
+"""Entrada estreita do analista. Não fala com a corretora."""

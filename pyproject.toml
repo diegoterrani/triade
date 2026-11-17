@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "daytrade"
-version = "0.1.0"
-description = "Três agentes independentes de day trade: B3, cripto e NASDAQ."
+name = "triade"
+version = "0.2.0"
+description = "TRIADE: três agentes de day trade com analista e perfil micro de conta real."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -24,6 +24,8 @@ daytrade-b3 = "daytrade.b3.__main__:main"
 daytrade-crypto = "daytrade.crypto.__main__:main"
 daytrade-nasdaq = "daytrade.nasdaq.__main__:main"
 daytrade-kill = "daytrade.kill:main"
+daytrade-llm = "daytrade.llm.__main__:main"
+triade-llm = "daytrade.llm.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -9,11 +9,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import requests
 
+from daytrade.common.config import assert_micro_leverage
 from daytrade.common.errors import Disconnect, EntryRolledBack, SafetyError
 from daytrade.common.models import Bar, Fill, Instrument, OrderRequest
 
@@ -256,6 +258,8 @@ class BinanceBroker:
         api_key: str,
         api_secret: str,
         instruments: dict[str, Instrument],
+        leverage: int | None = None,
+        margin_type: str = "isolated",
     ) -> None:
         if not api_key or not api_secret:
             raise SafetyError("chave da Binance ausente. Paper simulado não precisa de chave.")
@@ -264,6 +268,8 @@ class BinanceBroker:
         self.api_key = api_key
         self.api_secret = api_secret
         self.instruments = instruments
+        self.leverage = None if leverage is None else assert_micro_leverage(int(leverage))
+        self.margin_type = margin_type
         self.base = base_url(market, testnet)
         self.last: dict[str, float] = {}
         self._http = requests.Session()
@@ -271,6 +277,8 @@ class BinanceBroker:
 
     def connect(self) -> None:
         self._check_filters()
+        if self.leverage is not None and self.market == "usdm":
+            self._apply_isolated_leverage()
         self._equity_cache = self._read_equity()
 
     def mark(self, symbol: str, price: float) -> None:
@@ -448,7 +456,7 @@ class BinanceBroker:
         for symbol, instrument in self.instruments.items():
             payload = _get_json(self._http, self.base + path, {"symbol": symbol})
             info = _symbol_info(payload, symbol)
-            tick, step, min_qty = _filters(info)
+            tick, step, min_qty, min_notional = _filters(info)
             if tick != instrument.tick_size or step != instrument.lot_step:
                 raise SafetyError(
                     f"{symbol}: filtro da Binance é tick {tick} step {step}, "
@@ -456,6 +464,8 @@ class BinanceBroker:
                 )
             if min_qty > instrument.min_qty:
                 raise SafetyError(f"{symbol}: lote mínimo da Binance ({min_qty}) é maior que o config.")
+            if min_notional > 0:
+                self.instruments[symbol] = replace(instrument, min_notional=min_notional)
 
     def _signed(self, method: str, path: str, params: list[tuple[str, str]]) -> dict:
         if not any(key == "timestamp" for key, _ in params):
@@ -479,10 +489,28 @@ class BinanceBroker:
         if isinstance(payload, dict) and payload.get("code") and response.status_code >= 400:
             if is_duplicate_client_order(payload):
                 return payload
-            raise SafetyError(str(payload.get("msg", payload.get("code"))))
+            raise SafetyError(f"{payload.get('code')} {payload.get('msg', payload)}")
         if not isinstance(payload, dict):
             return {"raw": payload}
         return payload
+
+    def _apply_isolated_leverage(self) -> None:
+        for symbol in self.instruments:
+            try:
+                self._signed(
+                    "POST",
+                    "/fapi/v1/marginType",
+                    [("symbol", symbol), ("marginType", "ISOLATED")],
+                )
+            except SafetyError as exc:
+                text = str(exc)
+                if "No need to change" not in text and "-4046" not in text:
+                    raise
+            self._signed(
+                "POST",
+                "/fapi/v1/leverage",
+                [("symbol", symbol), ("leverage", str(self.leverage))],
+            )
 
 
 def _symbol_info(payload: object, symbol: str) -> dict:
@@ -494,17 +522,22 @@ def _symbol_info(payload: object, symbol: str) -> dict:
     raise SafetyError(f"{symbol} não voltou no exchangeInfo")
 
 
-def _filters(info: dict) -> tuple[float, float, float]:
+def _filters(info: dict) -> tuple[float, float, float, float]:
     tick = step = min_qty = None
+    min_notional = 0.0
     for item in info.get("filters", []):
-        if item.get("filterType") == "PRICE_FILTER":
+        kind = item.get("filterType")
+        if kind == "PRICE_FILTER":
             tick = float(item["tickSize"])
-        if item.get("filterType") == "LOT_SIZE":
+        if kind == "LOT_SIZE":
             step = float(item["stepSize"])
             min_qty = float(item["minQty"])
+        if kind in ("MIN_NOTIONAL", "NOTIONAL"):
+            raw = item.get("notional", item.get("minNotional", 0))
+            min_notional = float(raw or 0)
     if tick is None or step is None or min_qty is None:
         raise SafetyError("PRICE_FILTER ou LOT_SIZE ausente")
-    return tick, step, min_qty
+    return tick, step, min_qty, min_notional
 
 
 def _fill_price(payload: dict, ref_price: float) -> float:

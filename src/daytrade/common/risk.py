@@ -6,12 +6,12 @@ Um processo novo não reabre mão sozinho depois de furar o pico de equity.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 
 from daytrade.common.models import Instrument, Signal
 from daytrade.common.prices import nearest_tick
-from daytrade.common.sizing import size_by_risk
+from daytrade.common.sizing import size_by_risk, size_min_notional
 
 
 @dataclass
@@ -21,6 +21,9 @@ class RiskLimits:
     daily_loss_limit_pct: float
     max_drawdown_pct: float
     sticky_drawdown_halt: bool = True
+    max_trades_per_source: dict[str, int] | None = None
+    source_daily_loss_pct: float | None = None
+    sizing_mode: str = "risk"
 
     def __post_init__(self) -> None:
         if self.risk_per_trade_pct <= 0 or self.risk_per_trade_pct > 0.05:
@@ -31,6 +34,13 @@ class RiskLimits:
             raise ValueError("daily_loss_limit_pct tem de estar em (0, 0.2]")
         if not 0 < self.max_drawdown_pct <= 0.5:
             raise ValueError("max_drawdown_pct tem de estar em (0, 0.5]")
+        if self.sizing_mode not in ("risk", "min_notional"):
+            raise ValueError("sizing_mode é risk ou min_notional")
+        if self.source_daily_loss_pct is not None and not 0 < self.source_daily_loss_pct <= 0.2:
+            raise ValueError("source_daily_loss_pct tem de estar em (0, 0.2]")
+        for source, cap in (self.max_trades_per_source or {}).items():
+            if cap < 1:
+                raise ValueError(f"máximo de trades da fonte {source} tem de ser >= 1")
 
 
 @dataclass
@@ -45,6 +55,9 @@ class RiskState:
     sticky_halt: bool
     block_entries: bool
     halt_reason: str | None
+    trades_by_source: dict[str, int] = field(default_factory=dict)
+    pnl_by_source: dict[str, float] = field(default_factory=dict)
+    source_halted: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -86,6 +99,9 @@ class RiskManager:
         self.state.day_peak_equity = equity
         self.state.trades_today = 0
         self.state.realized_pnl_today = 0.0
+        self.state.trades_by_source = {}
+        self.state.pnl_by_source = {}
+        self.state.source_halted = {}
         if self.state.halted and not self.state.sticky_halt:
             self.state.halted = False
             self.state.halt_reason = None
@@ -108,11 +124,17 @@ class RiskManager:
                 fired = fired or "limite diário de perda"
         return fired
 
-    def note_entry(self) -> None:
+    def note_entry(self, source: str = "python") -> None:
         self.state.trades_today += 1
+        self.state.trades_by_source[source] = self.state.trades_by_source.get(source, 0) + 1
 
-    def note_realized(self, pnl: float) -> None:
+    def note_realized(self, pnl: float, source: str = "python") -> None:
         self.state.realized_pnl_today += pnl
+        self.state.pnl_by_source[source] = self.state.pnl_by_source.get(source, 0.0) + pnl
+        limit = self.limits.source_daily_loss_pct
+        start = self.state.day_start_equity
+        if limit and start > 0 and self.state.pnl_by_source[source] <= -(limit * start):
+            self.state.source_halted[source] = "limite diário da fonte"
 
     def clear_sticky_halt(self) -> None:
         self.state.sticky_halt = False
@@ -134,6 +156,13 @@ class RiskManager:
             return RiskDecision(False, 0.0, None, "entradas bloqueadas até a reconciliação")
         if self.state.halted:
             return RiskDecision(False, 0.0, signal.stop_price, self.state.halt_reason or "agente travado")
+        source = signal.source or "python"
+        source_reason = self.state.source_halted.get(source)
+        if source_reason:
+            return RiskDecision(False, 0.0, signal.stop_price, source_reason)
+        source_cap = (self.limits.max_trades_per_source or {}).get(source)
+        if source_cap is not None and self.state.trades_by_source.get(source, 0) >= source_cap:
+            return RiskDecision(False, 0.0, signal.stop_price, "máximo de trades da fonte no dia")
         if signal.stop_price is None:
             return RiskDecision(False, 0.0, None, "entrada sem stop")
         stop = nearest_tick(signal.stop_price, instrument.tick_size)
@@ -145,7 +174,15 @@ class RiskManager:
             return RiskDecision(False, 0.0, stop, "distância do stop menor que um tick")
         if self.state.trades_today >= self.limits.max_trades_per_day:
             return RiskDecision(False, 0.0, stop, "máximo de trades no dia")
-        qty = size_by_risk(equity, self.limits.risk_per_trade_pct, entry, stop, instrument)
+        working = instrument
+        if signal.requested_qty is not None:
+            working = replace(instrument, max_qty=min(instrument.max_qty, float(signal.requested_qty)))
+        if self.limits.sizing_mode == "min_notional":
+            qty = size_min_notional(equity, self.limits.risk_per_trade_pct, entry, stop, working)
+            if signal.requested_qty is not None and qty > float(signal.requested_qty) + 1e-9:
+                return RiskDecision(False, 0.0, stop, "lote mínimo da corretora passa da quantidade pedida")
+        else:
+            qty = size_by_risk(equity, self.limits.risk_per_trade_pct, entry, stop, working)
         if qty <= 0:
             return RiskDecision(False, 0.0, stop, "lote mínimo estoura o risco por trade")
         return RiskDecision(True, qty, stop, "aprovado")

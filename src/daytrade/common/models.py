@@ -26,6 +26,7 @@ class Instrument:
     fee_rate_side: float = 0.0
     slippage_ticks: float = 0.0
     max_qty: float = 1.0
+    min_notional: float = 0.0
 
     def fee(self, qty: float, price: float) -> float:
         notional = abs(price) * self.point_value
@@ -62,6 +63,12 @@ class Signal:
     target_price: float | None = None
     immediate: bool = False
     strength: float = 1.0
+    source: str = "python"
+    requested_qty: float | None = None
+    limit_price: float | None = None
+    max_hold_minutes: int | None = None
+    client_order_id: str | None = None
+    rationale: str = ""
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,8 @@ class Position:
     contract: str
     client_order_id: str
     target_price: float | None = None
+    source: str = "python"
+    max_hold_until: datetime | None = None
 
     @property
     def side(self) -> Side:
@@ -95,6 +104,7 @@ class OrderRequest:
     stop_price: float | None = None
     reduce_only: bool = False
     contract: str = ""
+    source: str = "python"
 
 
 @dataclass(frozen=True)
@@ -124,3 +134,4 @@ class Trade:
     entry_reason: str
     exit_reason: str
     strategy: str
+    source: str = "python"
