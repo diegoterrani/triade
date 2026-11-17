@@ -41,6 +41,9 @@ class MT5BarFeed:
         self.queue: list[Bar] = []
 
     def poll(self) -> Bar | None:
+        heartbeat = getattr(self.broker, "heartbeat", None)
+        if heartbeat is not None:
+            heartbeat()
         if self.max_bars is not None and self.yielded >= self.max_bars:
             self.exhausted = True
             return None

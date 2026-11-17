@@ -11,6 +11,7 @@ def main() -> int:
         "  python -m daytrade.nasdaq backtest|paper|live\n"
         "Kill switch: python -m daytrade.kill b3|crypto|nasdaq|--all\n"
         "Analista: python -m daytrade.llm b3|crypto|nasdaq submit|status|context|set-param|enable|disable\n"
+        "Ponte MT5: python -m daytrade.mt5bridge check --config configs/b3.yaml\n"
         "O padrão de cada config é paper. Live exige flag, DAYTRADE_LIVE_CONFIRM e o perfil micro_live."
     )
     return 0

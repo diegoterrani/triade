@@ -219,7 +219,12 @@ class ExecutionEngine:
         except Disconnect as exc:
             self.journal.write("cancel_failed", erro=str(exc))
             log_event(self.logger, logging.ERROR, "falha ao cancelar ordens", erro=str(exc))
-        symbols = set(self.positions) | set(self.broker.positions())
+        try:
+            remote = set(self.broker.positions())
+        except Disconnect as exc:
+            self.journal.write("flatten_sem_corretora", motivo=reason, erro=str(exc))
+            remote = set()
+        symbols = set(self.positions) | remote
         for symbol in sorted(symbols):
             price = self.last_prices.get(symbol)
             if price is None:
@@ -229,7 +234,11 @@ class ExecutionEngine:
             if price is None:
                 self.journal.write("flatten_sem_preco", symbol=symbol, motivo=reason)
                 continue
-            self._flatten(symbol, price, when, reason)
+            try:
+                self._flatten(symbol, price, when, reason)
+            except Disconnect as exc:
+                self.journal.write("flatten_sem_corretora", symbol=symbol, motivo=reason, erro=str(exc))
+                break
         self.journal.write("flatten_all", motivo=reason, canceladas=cancelled)
 
     def persist(self) -> None:

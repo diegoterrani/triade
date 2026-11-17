@@ -15,7 +15,8 @@ src/daytrade/llm/        CLI estreita do analista
 src/daytrade/b3/         WIN e WDO, rolagem, calendário da B3
 src/daytrade/crypto/     BTCUSDT e ETHUSDT, EMA, funding
 src/daytrade/nasdaq/     USTEC, sessão de Nova York, calendário da NYSE
-scripts/windows/         venv, tarefas e watcher no VPS
+scripts/linux/           Wine, Xvfb, ponte e unidades systemd
+scripts/windows/         caminho alternativo, se o VPS for Windows
 examples/                pedido de exemplo do analista
 data/sample/             CSV de estudo (B3 e NASDAQ sintéticos; cripto real)
 artifacts/backtests/     métricas da amostra
@@ -127,7 +128,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-O extra `mt5` (`pip install -e ".[mt5]"`) só existe para Windows. Nesta máquina Linux o backtest e o paper de replay rodam sem ele.
+O extra `mt5` (`pip install -e ".[mt5]"`) é o Python do Windows. No VPS Linux o agente não instala esse pacote: ele fala com um Python de Windows que roda dentro do Wine. Backtest e paper de replay não precisam do terminal.
 
 ## Como rodar
 
@@ -171,7 +172,7 @@ python -m pytest
 
 ## B3 e MetaTrader 5
 
-A corretora da B3 entra pelo MetaTrader 5. A primeira opção é o MT5 da XP. Se a XP não oferecer MT5 nessa conta, Clear ou Rico servem: são do mesmo grupo, com outro login, outro servidor e outro `terminal_path`. O nome do servidor não está fixo neste repositório; copie o que o terminal mostrar em Arquivo → Login. O pacote `MetaTrader5` só instala no Python de Windows, na mesma máquina do terminal. Wine pode abrir o terminal; não substitui esse Python. Backtest e paper de replay não precisam do terminal e foram executados no Linux.
+A corretora da B3 entra pelo MetaTrader 5. A primeira opção é o MT5 da XP. Se a XP não oferecer MT5 nessa conta, Clear ou Rico servem: são do mesmo grupo, com outro login, outro servidor e outro `terminal_path`. O nome do servidor não está fixo neste repositório; copie o que o terminal mostrar em Arquivo → Login. O pacote `MetaTrader5` só existe para Windows. No VPS Linux ele roda dentro do Wine, junto do terminal, e o agente fala com ele pela ponte (`mt5.transport: bridge`). No Windows nativo, `mt5.transport: direct`. Backtest e paper de replay não precisam do terminal.
 
 Desde 10/03/2025 a sessão contínua do WIN é 09:00–18:25, com leilão de fechamento por volta de 18:25–18:30. O WDO vai até 18:30 e não tem leilão de fechamento oficial. O leilão de abertura fica perto de 08:45–09:00. O config começa a faixa às 09:05 e zera antes do fim.
 
@@ -184,7 +185,7 @@ Custos no YAML são teto de emolumento da página educativa da B3 (WIN cerca de 
 
 O calendário inclui feriados nacionais, 25 de janeiro, Carnaval (segunda e terça), Sexta-feira Santa, Corpus Christi e 24/31 de dezembro como dia sem pregão. Isso é aproximação. O calendário oficial do ano manda: use `calendar.extra_closed` e `extra_open`.
 
-Dois agentes MT5 na mesma máquina Windows são dois processos, dois `terminal_path`, dois logins e dois magic (`26011701` na B3, `26011702` no NASDAQ). Não aponte os dois para o mesmo executável se as corretoras forem diferentes.
+B3 e NASDAQ são dois terminais, dois prefixos Wine, duas portas (`18861` e `18862`), dois logins e dois magic (`26011701` e `26011702`). Não aponte os dois para o mesmo `terminal64.exe`. O cripto não usa nada disso: é Python do Linux e a API da Binance.
 
 `time_offset_hours` fica 0 quando o terminal grava o horário local como se fosse UTC. Ajuste se as barras nascerem deslocadas.
 
@@ -228,9 +229,72 @@ Na cripto e nos dois modos do NASDAQ a amostra cheia furou o drawdown máximo e 
 
 Os três paper de replay rodaram ao mesmo tempo, cada um com o próprio `var/<agente>/`, e cada um registrou trade no diário.
 
-## VPS Windows perto de São Paulo
+## VPS Linux perto de São Paulo
 
-O desenho de conta real é uma máquina Windows próxima de São Paulo, com os dois terminais MT5 e os três processos Python. O fuso do Windows pode ficar em `America/Sao_Paulo`. O agente do NASDAQ continua em `America/New_York` no YAML: o Brasil não tem horário de verão desde 2019 e os Estados Unidos têm.
+O alvo é um Ubuntu ou Debian perto de São Paulo. O fuso da máquina pode ficar em `America/Sao_Paulo`. O agente do NASDAQ continua em `America/New_York` no YAML: o Brasil não tem horário de verão desde 2019 e os Estados Unidos têm.
+
+O cripto é um processo Python do Linux. B3 e NASDAQ não importam `MetaTrader5` nesse processo. Cada um tem o próprio prefixo Wine, o próprio Xvfb, o próprio terminal e uma ponte que só escuta em `127.0.0.1`. Dentro do prefixo roda o Python de Windows com o pacote `MetaTrader5`. O agente manda um JSON por conexão local, com prazo em toda chamada. A ponte não é um atalho de risco: ordem, stop, perda diária, drawdown, kill e horário continuam no agente.
+
+`mt5.transport: bridge` é o padrão destes YAMLs. `direct` é o Python do Windows falando com o terminal sem ponte, no caminho alternativo mais abaixo.
+
+A ponte é frágil. Wine, o terminal e o Python de dentro do prefixo são três processos que podem travar sem derrubar o agente. Um prazo estourado ou um socket fechado vira desconexão: o sinal pendente é descartado, entrada nova fica bloqueada, e a volta passa por reconciliação antes de liberar o livro. A ordem que estava na fila não é reenviada. Se a chamada estourou depois do `order_send`, a ordem pode ter ido; a reconciliação é quem diz o que ficou aberto.
+
+Como ver se a ponte está viva, com o agente parado para não disputar a única conexão:
+
+```bash
+systemctl --user start triade-xvfb-b3 triade-bridge-b3
+.venv/bin/python -m daytrade.mt5bridge check --config configs/b3.yaml
+```
+
+A resposta `{"ok": true, "pong": true, ...}` significa que o processo da ponte aceita conexão. Não significa que o terminal está logado. Com o agente parado, `--init` pede o login e lê a equity. Dois processos inicializando o mesmo terminal brigam; não use `--init` com o agente no ar.
+
+Se o check falhar:
+
+1. `systemctl --user status triade-xvfb-b3 triade-bridge-b3` e o arquivo `var/b3/logs/bridge.log`.
+2. Confira se o display existe: `ls /tmp/.X11-unix/X71` (B3) e `X72` (NASDAQ).
+3. Confira a porta: `ss -ltnp | grep 18861`. Tem de ser `127.0.0.1`, nunca `0.0.0.0`.
+4. Reinicie só a ponte: `systemctl --user restart triade-bridge-b3`. Se o terminal pediu senha de novo, abra o prefixo e faça o login. O agente, quando a ponte volta, reconcilia e escreve isso no diário.
+5. Não aponte a B3 e o NASDAQ para o mesmo prefixo nem para a mesma porta. Não faça forward dessa porta para fora da máquina.
+
+### Comandos
+
+Na raiz do projeto, num Ubuntu/Debian:
+
+```bash
+sudo apt-get install -y wine wine64 winetricks xvfb cabextract unzip wget ca-certificates python3 python3-venv python3-pip
+bash scripts/linux/setup-triade.sh
+```
+
+O script cria o venv do Linux (sem o extra `mt5`), copia `.env.example` se ainda não houver `.env`, cria os prefixos `~/.local/share/triade/wine-b3` e `wine-nasdaq`, instala o Python 3.12 de Windows e o `MetaTrader5` dentro de cada um, e grava unidades de usuário do systemd. Elas nascem **desabilitadas**. Os agentes nascem em **paper**. O script não mexe em `live_enabled` e não define `DAYTRADE_LIVE_CONFIRM`.
+
+Instale o terminal em cada prefixo e entre na conta. XP primeiro; Clear ou Rico se a XP não oferecer MT5. IC Markets no outro prefixo:
+
+```bash
+WINEPREFIX=$HOME/.local/share/triade/wine-b3 xvfb-run -a wine ~/Downloads/xp-mt5setup.exe
+WINEPREFIX=$HOME/.local/share/triade/wine-nasdaq xvfb-run -a wine ~/Downloads/icmarkets-mt5setup.exe
+```
+
+Aponte `mt5.terminal_path` para o `terminal64.exe` daquele prefixo (`C:\Program Files\MetaTrader 5\terminal64.exe` é o caminho de dentro do Wine, não o caminho Linux). Preencha o `.env`. Deixe o símbolo no Market Watch.
+
+Subir à mão, ainda em paper:
+
+```bash
+systemctl --user start triade-xvfb-b3 triade-bridge-b3
+bash scripts/linux/run-agent.sh b3 paper
+bash scripts/linux/run-agent.sh crypto paper
+```
+
+Log do agente: `var/<agente>/logs/paper.jsonl` (ou `live.jsonl`). Log da ponte: `var/<agente>/logs/bridge.log`. O watcher de `scripts/linux/run-agent.sh` olha `var/KILL_ALL` e `var/<agente>/KILL`. Enquanto um desses arquivos existir, ele espera e não religa o Python. A unidade da ponte reinicia se o Wine cair; ela não manda ordem sozinha. Apagar o kill não zera posição.
+
+Para o boot, depois do checklist: `sudo loginctl enable-linger $USER`, habilite as unidades e só então edite `triade-agent-b3.service` para trocar `paper` por `live`.
+
+```bash
+systemctl --user enable --now triade-xvfb-b3 triade-bridge-b3 triade-agent-b3 triade-agent-crypto
+```
+
+## VPS Windows, caminho alternativo
+
+Se a máquina for Windows, use `mt5.transport: direct` nos YAMLs da B3 e do NASDAQ. O processo é o Python de Windows, no mesmo computador do terminal, sem Wine e sem ponte. O fuso pode ficar em `America/Sao_Paulo`. O NASDAQ continua em `America/New_York` no YAML.
 
 1. Instale o Python 3.12 de 64 bits (python.org). O wheel do MetaTrader 5 é `win_amd64`.
 2. Instale dois terminais, cada um no próprio diretório: o MT5 da XP (ou Clear/Rico, se a XP não tiver MT5) e o MT5 da IC Markets. Anote cada `terminal64.exe`. Não use o mesmo executável para as duas corretoras.
@@ -257,7 +321,7 @@ O log do processo fica em `var\<agente>\logs\paper.jsonl` (ou `live.jsonl`). A f
 
 ## Checklist para conta real com capital pequeno
 
-Um agente por vez. `live_enabled` continua `false` até o último item. A tarefa do Windows continua desabilitada até lá.
+Um agente por vez. `live_enabled` continua `false` até o último item. A unidade systemd, ou a tarefa do Windows, continua desabilitada até lá.
 
 1. Leia a amostra de novo. Ela não autoriza a conta. O positivo da B3 é série sintética curta; cripto e NASDAQ furaram o drawdown.
 2. Confirme que o comando `live` está no perfil `micro_live`: 1 WIN, 1 WDO, alavancagem no máximo 2x isolada, lote mínimo do USTEC lido no terminal.
@@ -268,14 +332,14 @@ Um agente por vez. `live_enabled` continua `false` até o último item. A tarefa
 7. Mande um pedido do analista com quantidade acima do teto e outro sem stop. Os dois têm de sair com `erro:` e código 2, sem chegar na corretora.
 8. Com uma mão Python aberta, o pedido do analista no mesmo símbolo tem de ser recusado. Com a mão do analista aberta, o Python não pode fechá-la.
 9. `disable` não zera. O kill switch zera. Teste os dois antes de deixar o processo sozinho.
-10. Derrube a rede de propósito. O agente não reentra no escuro; na volta, o estado tem de bater com a corretora, inclusive a fonte da mão.
+10. Pare a ponte (`systemctl --user stop triade-bridge-b3`) no meio do paper com terminal. O diário tem de registrar desconexão e nenhuma entrada nova. Suba a ponte e confira a reconciliação. O mesmo vale para uma queda de rede no cripto.
 11. Confira feriados do ano (`extra_closed`) e a diferença de horário de verão de Nova York contra São Paulo.
 12. `DAYTRADE_LIVE_CONFIRM` só existe na máquina que opera, nunca no git.
 13. Aí sim, ainda com capital do `micro_live`: `live_enabled: true`, `mt5.demo: false` (ou chaves live da Binance, não as de testnet), e o comando `live`. O analista continua passando pelo mesmo risco. Ele não aumenta o teto de perda nem o lote máximo.
 
 ## Limitações
 
-- Não havia terminal MT5, conta de corretora nem chave da Binance. Ordem demo, testnet e live não foram enviadas. O pedido do analista foi validado e percorrido no paper de replay; não saiu para corretora. O lote mínimo do USTEC não foi lido de um terminal nesta máquina.
+- Não havia terminal MT5, conta de corretora nem chave da Binance. Ordem demo, testnet e live não foram enviadas. A ponte foi exercitada com um servidor falso (prazo e queda), não com Wine nem com um terminal logado. O lote mínimo do USTEC não foi lido de um terminal nesta máquina.
 - Este repositório não chama uma API de modelo. O analista é um processo seu, que usa a CLI. Sem chave de LLM.
 - B3 e NASDAQ da amostra são aleatórios com semente `20261117`. Servem para o estudo rodar, não para descrever o pregão.
 - O REST de futuros da Binance respondeu 451. O candle ao vivo (`binance_public`) não foi exercitado. O histórico veio do arquivo público da Binance Vision.

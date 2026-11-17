@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from daytrade.common.errors import Disconnect, SafetyError
 from daytrade.common.models import Fill, Instrument, OrderRequest
+from daytrade.common.mt5_bridge import BridgeClient
 from daytrade.common.specs import assert_point_value, read_terminal_spec
 from daytrade.common.symbols import SymbolRouter
 
@@ -68,6 +69,11 @@ class MT5Broker:
         deviation: int = 20,
         demo: bool = False,
         adopt_terminal_spec: bool = False,
+        transport: str = "direct",
+        bridge_host: str = "127.0.0.1",
+        bridge_port: int = 18861,
+        bridge_timeout: float = 5.0,
+        bridge_heartbeat: float = 5.0,
     ) -> None:
         self.terminal_path = terminal_path
         self.login = login
@@ -79,19 +85,18 @@ class MT5Broker:
         self.deviation = deviation
         self.demo = demo
         self.adopt_terminal_spec = adopt_terminal_spec
+        self.transport = transport
+        self.bridge_host = bridge_host
+        self.bridge_port = int(bridge_port)
+        self.bridge_timeout = float(bridge_timeout)
+        self.bridge_heartbeat = float(bridge_heartbeat)
+        if self.transport not in ("direct", "bridge"):
+            raise SafetyError("mt5.transport é direct ou bridge")
         self.last: dict[str, float] = {}
         self._mt5 = None
 
     def connect(self) -> None:
-        try:
-            import MetaTrader5 as mt5
-        except ImportError as exc:
-            raise SafetyError(
-                "O pacote MetaTrader5 não está disponível neste sistema. "
-                "O wheel oficial só instala no Windows, no mesmo computador do terminal. "
-                "Backtest e paper com replay continuam disponíveis."
-            ) from exc
-        self._mt5 = mt5
+        self._mt5 = self._open_session()
         kwargs: dict[str, object] = {}
         if self.terminal_path:
             kwargs["path"] = self.terminal_path
@@ -99,9 +104,39 @@ class MT5Broker:
             kwargs["login"] = int(self.login)
             kwargs["password"] = self.password
             kwargs["server"] = self.server
-        if not mt5.initialize(**kwargs):
-            raise Disconnect(f"MT5 não inicializou: {mt5.last_error()}")
+        if not self._mt5.initialize(**kwargs):
+            raise Disconnect(f"MT5 não inicializou: {self._mt5.last_error()}")
         self._check_specs()
+
+    def heartbeat(self) -> None:
+        if self.transport != "bridge":
+            return
+        if self._mt5 is None or not getattr(self._mt5, "alive", False):
+            raise Disconnect("ponte MT5 caída")
+        self._mt5.heartbeat()
+
+    def _open_session(self):
+        if self.transport == "direct":
+            try:
+                import MetaTrader5 as mt5
+            except ImportError as exc:
+                raise SafetyError(
+                    "O pacote MetaTrader5 não está disponível neste Python. "
+                    "No VPS Linux ele roda dentro do Wine, com mt5.transport: bridge. "
+                    "No Windows nativo use mt5.transport: direct. "
+                    "Backtest e paper com replay continuam sem o terminal."
+                ) from exc
+            return mt5
+        if self._mt5 is not None and getattr(self._mt5, "alive", False):
+            self._mt5.close()
+        client = BridgeClient(
+            self.bridge_host,
+            self.bridge_port,
+            timeout=self.bridge_timeout,
+            heartbeat=self.bridge_heartbeat,
+        )
+        client.connect()
+        return client
 
     def mark(self, symbol: str, price: float) -> None:
         self.last[symbol] = price
@@ -196,9 +231,13 @@ class MT5Broker:
         raise SafetyError(f"não achei posição de magic {self.magic} em {venue} para gravar o stop")
 
     def shutdown(self) -> None:
-        if self._mt5 is not None:
+        if self._mt5 is None:
+            return
+        try:
             self._mt5.shutdown()
-            self._mt5 = None
+        except Disconnect:
+            pass
+        self._mt5 = None
 
     def _check_specs(self) -> None:
         now = datetime.now(timezone.utc)
@@ -267,3 +306,16 @@ class MT5Broker:
     def _require(self) -> None:
         if self._mt5 is None:
             self.connect()
+            return
+        if self.transport == "bridge" and not getattr(self._mt5, "alive", False):
+            raise Disconnect("ponte MT5 caída")
+
+
+def mt5_connection_kwargs(mt5_cfg: dict) -> dict[str, object]:
+    return {
+        "transport": str(mt5_cfg.get("transport", "direct")),
+        "bridge_host": str(mt5_cfg.get("bridge_host", "127.0.0.1")),
+        "bridge_port": int(mt5_cfg.get("bridge_port", 18861)),
+        "bridge_timeout": float(mt5_cfg.get("bridge_timeout_seconds", 5)),
+        "bridge_heartbeat": float(mt5_cfg.get("bridge_heartbeat_seconds", 5)),
+    }

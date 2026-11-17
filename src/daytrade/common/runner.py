@@ -34,22 +34,20 @@ def run_loop(feed: object, engine: ExecutionEngine, sleeper: Sleeper = time.slee
             try:
                 bar = feed.poll()
             except Disconnect as exc:
-                engine.on_disconnect(str(exc))
-                engine.persist()
-                if not feed.reconnect():
-                    engine.flatten_all("desconexão sem reconexão")
-                    engine.journal.write("halt", motivo="desconexão sem reconexão")
-                    engine.persist()
+                if not _recover(engine, feed, str(exc)):
                     break
-                engine.reconcile_and_adopt()
-                engine.persist()
                 continue
             if bar is None:
                 if getattr(feed, "exhausted", False):
                     break
                 sleeper(float(getattr(feed, "idle_seconds", 1.0)))
                 continue
-            status = engine.process_bar(bar)
+            try:
+                status = engine.process_bar(bar)
+            except Disconnect as exc:
+                if not _recover(engine, feed, str(exc)):
+                    break
+                continue
             engine.persist()
             if status == "kill":
                 break
@@ -62,3 +60,28 @@ def run_loop(feed: object, engine: ExecutionEngine, sleeper: Sleeper = time.slee
     engine.flatten_all("encerramento do processo", ts=engine.last_bar_ts)
     engine.persist()
     return engine
+
+
+def _recover(engine: ExecutionEngine, feed: object, detail: str) -> bool:
+    """False encerra o loop. True segue depois de reconciliar, sem reenviar o sinal antigo."""
+    engine.on_disconnect(detail)
+    engine.persist()
+    reconnected = False
+    try:
+        reconnected = bool(feed.reconnect())
+    except Disconnect:
+        reconnected = False
+    if not reconnected:
+        engine.flatten_all("desconexão sem reconexão")
+        engine.journal.write("halt", motivo="desconexão sem reconexão")
+        engine.persist()
+        return False
+    try:
+        engine.reconcile_and_adopt()
+    except Disconnect as exc:
+        engine.journal.write("reconcile_failed", erro=str(exc))
+        engine.flatten_all("desconexão sem reconexão")
+        engine.persist()
+        return False
+    engine.persist()
+    return True

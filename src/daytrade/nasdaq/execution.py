@@ -16,7 +16,7 @@ from daytrade.common.errors import SafetyError
 from daytrade.common.feeds import ReplayFeed, load_bars_csv
 from daytrade.common.livegate import assert_live_allowed
 from daytrade.common.logging_setup import setup_logging
-from daytrade.common.mt5_broker import MT5Broker
+from daytrade.common.mt5_broker import MT5Broker, mt5_connection_kwargs
 from daytrade.common.mt5_feed import MT5BarFeed
 from daytrade.common.runner import run_loop
 from daytrade.common.symbols import IdentityRouter
@@ -72,6 +72,7 @@ def build_broker(cfg: dict, mode: str):
         deviation=int(mt5_cfg.get("deviation", 30)),
         demo=bool(mt5_cfg.get("demo", False)),
         adopt_terminal_spec=bool(cfg.get("adopt_terminal_spec")),
+        **mt5_connection_kwargs(mt5_cfg),
     )
     broker.connect()
     return broker

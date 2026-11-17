@@ -73,8 +73,13 @@ backtest:
   oos_fraction: 0.3
 
 mt5:
+  transport: bridge
+  bridge_host: 127.0.0.1
+  bridge_port: 18862
+  bridge_timeout_seconds: 5
+  bridge_heartbeat_seconds: 5
   demo: true
-  terminal_path: ""
+  terminal_path: ""          # caminho DENTRO do prefixo da IC Markets
   login_env: NASDAQ_MT5_LOGIN
   password_env: NASDAQ_MT5_PASSWORD
   server_env: NASDAQ_MT5_SERVER

@@ -1,0 +1,1 @@
+"""Checagem da ponte. Não manda ordem."""

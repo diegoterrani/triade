@@ -83,8 +83,15 @@ backtest:
   oos_fraction: 0.3
 
 mt5:
+  # bridge: Python Linux fala com o Python do Wine em 127.0.0.1.
+  # direct: este processo é o Python do Windows, no mesmo computador do terminal.
+  transport: bridge
+  bridge_host: 127.0.0.1
+  bridge_port: 18861
+  bridge_timeout_seconds: 5
+  bridge_heartbeat_seconds: 5
   demo: true
-  terminal_path: ""          # exemplo: C:\Program Files\Clear MT5\terminal64.exe
+  terminal_path: ""          # caminho DENTRO do prefixo, ex.: C:\Program Files\MetaTrader 5\terminal64.exe
   login_env: B3_MT5_LOGIN
   password_env: B3_MT5_PASSWORD
   server_env: B3_MT5_SERVER

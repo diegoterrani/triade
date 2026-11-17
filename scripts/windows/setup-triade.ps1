@@ -1,4 +1,5 @@
-# Prepara o VPS Windows perto de Sao Paulo.
+# Caminho alternativo: VPS Windows, mt5.transport direct.
+# O alvo documentado e o VPS Linux com Wine. Este script nao e o padrao.
 # Nao liga live_enabled e nao cria a variavel DAYTRADE_LIVE_CONFIRM.
 # As tarefas nascem desabilitadas e em modo paper.
 # Uso, no PowerShell, na raiz do projeto:
